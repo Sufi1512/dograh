@@ -1,0 +1,36 @@
+Install Python 3.13 and Node 24 first, then run these in PowerShell:
+
+
+.\scripts\setup_fork.ps1                  # creates venv, .env files, pipecat submodule
+.\venv\Scripts\Activate.ps1
+.\scripts\setup_requirements.ps1 -Dev
+cd ui; npm install; cd ..
+docker compose -f docker-compose-local.yaml up -d   # Postgres, Redis, MinIO
+.\scripts\start_services_dev.ps1
+Then start the UI in a second terminal with cd ui; npm run dev and open http://localhost:3000.
+
+On Windows, use the .ps1 scripts rather than the .sh ones. setup_fork.ps1 may ask for your fork's URL. Your origin most likely already points to Sufi1512/dograh, so give it that URL.
+
+
+
+[3/4] Python virtual environment
+Error: no Python 3.13 interpreter found on PATH. Install Python 3.13.
+PS C:\Projects\Dograh\dograh>
+Grep "3\.13|py -|python3" (in c:\Projects\Dograh\dograh\scripts\setup_fork.ps1)
+7 lines of output
+PowerShell List installed Python versions and check winget
+IN
+py -0p; winget --version
+
+OUT
+ -V:3.11 *        C:\Users\khans\AppData\Local\Programs\Python\Python311\python.exe
+ -V:3.10          C:\Users\khans\AppData\Local\Programs\Python\Python310\python.exe
+v1.29.380
+10:41 PM
+Only Python 3.11 and 3.10 are installed on your machine. The setup script also only looks for python3.13, python3 or python on PATH. It doesn't use the py launcher. The simplest fix is to install 3.13 and create the venv yourself. When the script finds an existing venv that uses 3.13, it reuses it.
+
+
+winget install Python.Python.3.13
+# open a new terminal so PATH refreshes, then:
+py -3.13 -m venv venv
+.\scripts\setup_fork.ps1
