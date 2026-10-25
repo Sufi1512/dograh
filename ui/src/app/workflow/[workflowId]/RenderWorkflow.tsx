@@ -17,7 +17,7 @@ import { useNodeSpecs } from "@/components/flow/renderer";
 import { FlowEdge, FlowNode, NodeType } from "@/components/flow/types";
 import { HireExpertNudge } from "@/components/lead-forms/HireExpertNudge";
 import { Button } from '@/components/ui/button';
-import { Sheet, SheetContent } from '@/components/ui/sheet';
+import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { useOnboarding } from '@/context/OnboardingContext';
 import { UnsavedChangesProvider, useUnsavedChangesContext } from '@/context/UnsavedChangesContext';
@@ -825,7 +825,8 @@ function WorkflowEditor({
                     </div>
 
                     <Sheet open={isTesterSheetOpen} onOpenChange={setIsTesterSheetOpen}>
-                        <SheetContent side="right" className="w-full max-w-none p-0 sm:max-w-xl xl:hidden">
+                        <SheetContent side="right" className="w-full max-w-none p-0 sm:max-w-xl xl:hidden" aria-describedby={undefined}>
+                            <SheetTitle className="sr-only">Test workflow</SheetTitle>
                             <WorkflowTesterPanel
                                 workflowId={workflowId}
                                 initialContextVariables={templateContextVariables}
