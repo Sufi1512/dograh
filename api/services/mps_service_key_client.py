@@ -1,10 +1,10 @@
 """
 MPS Service Key HTTP Client
-This client communicates with the Model Proxy Service (MPS) for service key management.
+This client communicates with the Model Proxy Service (MPS) for service key
+management and managed model requests.
 Service keys are stored and managed entirely in MPS, not in the local database.
 """
 
-import asyncio
 import uuid
 from datetime import datetime
 from typing import List, Optional
@@ -12,6 +12,7 @@ from typing import List, Optional
 import httpx
 from fastapi import HTTPException
 from loguru import logger
+from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 
 from api.constants import (
     DEPLOYMENT_MODE,
@@ -49,7 +50,7 @@ def _log_mps_dependency_failure(
 
 
 class MPSServiceKeyClient:
-    """HTTP client for managing service keys via MPS API."""
+    """HTTP client for service keys and managed model requests via MPS API."""
 
     def __init__(self):
         self.base_url = MPS_API_URL
@@ -538,6 +539,40 @@ class MPSServiceKeyClient:
                 response=response,
             )
 
+    async def list_payments(
+        self, organization_id: int, created_by: Optional[str] = None
+    ) -> dict:
+        """List the org's paid credit top-ups, newest first, with invoices."""
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            response = await client.get(
+                f"{await self._billing_url(organization_id)}/payments",
+                headers=await self._tenant_headers(
+                    organization_id=organization_id,
+                    created_by=created_by,
+                ),
+            )
+            response.raise_for_status()
+            return response.json()
+
+    async def get_invoice_pdf(
+        self,
+        organization_id: int,
+        payment_order_id: int,
+        created_by: Optional[str] = None,
+    ) -> httpx.Response:
+        """Fetch a paid top-up's invoice PDF; raises httpx.HTTPStatusError."""
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            response = await client.get(
+                f"{await self._billing_url(organization_id)}"
+                f"/invoices/{payment_order_id}/pdf",
+                headers=await self._tenant_headers(
+                    organization_id=organization_id,
+                    created_by=created_by,
+                ),
+            )
+            response.raise_for_status()
+            return response
+
     async def get_credit_ledger(
         self,
         organization_id: int,
@@ -763,6 +798,52 @@ class MPSServiceKeyClient:
                 response=response,
             )
 
+    async def create_agent_builder_completion(
+        self,
+        *,
+        service_key: str,
+        messages: list[dict],
+        max_tokens: int,
+        metadata: dict | None = None,
+        tools: list[dict] | None = None,
+        tool_choice: str | dict | None = None,
+    ) -> dict:
+        """Request one billed Agent Builder completion.
+
+        Authenticate with the caller's configured Dograh Service Key. MPS owns
+        model selection, request identity, price snapshot and credit settlement.
+        Return the full response, preserving provider reasoning/tool metadata.
+
+        Transport and HTTP failures propagate to the caller.
+        """
+        headers = {"Authorization": f"Bearer {service_key}"}
+        metadata = {
+            key: value
+            for key, value in (metadata or {}).items()
+            if key not in {"correlation_id", "mps_billing_version"}
+        }
+        # Only W3C trace context; never forward baggage or caller credentials to
+        # another destination. MPS remains responsible for the generation span.
+        TraceContextTextMapPropagator().inject(headers)
+        # Builder-only call. The build stage can generate a full @dograh/sdk
+        # workflow, which can run longer than a chat turn; keep this under the
+        # 300s builder step deadline (service.py) so that stays the outer bound.
+        async with httpx.AsyncClient(timeout=httpx.Timeout(290, connect=10)) as client:
+            response = await client.post(
+                f"{self.base_url.rstrip('/')}/api/v1/agent-builder/chat/completions",
+                headers=headers,
+                json={
+                    "messages": messages,
+                    "stream": False,
+                    "max_tokens": max_tokens,
+                    "tools": tools,
+                    "tool_choice": tool_choice,
+                    "metadata": metadata,
+                },
+            )
+            response.raise_for_status()
+            return response.json()
+
     async def report_platform_usage(
         self,
         *,
@@ -771,7 +852,6 @@ class MPSServiceKeyClient:
         duration_seconds: Optional[float] = None,
         workflow_run_id: int | None = None,
         metadata: Optional[dict] = None,
-        max_attempts: int = 3,
     ) -> dict:
         """Report hosted Dograh platform usage for a completed workflow run."""
         if DEPLOYMENT_MODE == "oss":
@@ -792,40 +872,21 @@ class MPSServiceKeyClient:
         if workflow_run_id is not None:
             payload["workflow_run_id"] = workflow_run_id
 
-        max_attempts = max(1, max_attempts)
-        last_response: httpx.Response | None = None
         url = f"{await self._billing_url(organization_id)}/platform-usage"
         headers = await self._tenant_headers(organization_id=organization_id)
         async with httpx.AsyncClient(timeout=self.timeout) as client:
-            for attempt in range(1, max_attempts + 1):
-                response = await client.post(url, json=payload, headers=headers)
-                last_response = response
+            response = await client.post(url, json=payload, headers=headers)
 
-                if response.status_code == 200:
-                    return response.json()
+        if response.status_code == 200:
+            return response.json()
 
-                usage_not_ready = (
-                    response.status_code == 409 and "usage_not_ready" in response.text
-                )
-                if usage_not_ready and attempt < max_attempts:
-                    await asyncio.sleep(attempt)
-                    continue
-
-                log = logger.warning if usage_not_ready else logger.error
-                log(
-                    "Failed to report platform usage: "
-                    f"{response.status_code} - {response.text}"
-                )
-                raise httpx.HTTPStatusError(
-                    f"Failed to report platform usage: {response.text}",
-                    request=response.request,
-                    response=response,
-                )
-
+        logger.error(
+            f"Failed to report platform usage: {response.status_code} - {response.text}"
+        )
         raise httpx.HTTPStatusError(
-            "Failed to report platform usage",
-            request=last_response.request,
-            response=last_response,
+            f"Failed to report platform usage: {response.text}",
+            request=response.request,
+            response=response,
         )
 
     async def transcribe_audio(
